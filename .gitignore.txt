@@ -1,0 +1,40 @@
+# Fișiere de build și executabile
+*.exe
+*.dll
+*.so
+*.dylib
+*.o
+*.obj
+*.a
+*.lib
+
+# Foldere generate de Qt Creator / CMake
+build/
+build-*/
+*-build-*/
+.qt/
+
+# Fișiere de configurare locală Qt Creator
+*.user
+*.user.*
+*.qmake.stash
+*.qmake.cache
+
+# Fișiere temporare CMake
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+Makefile
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+
+# Fișiere autogenerate de Qt (de obicei stau în folderul de build, dar ca siguranță)
+moc_*.cpp
+moc_*.h
+ui_*.h
+qrc_*.cpp
+
+# Setări specifice sistemului de operare (Windows/Mac)
+Thumbs.db
+.DS_Store
