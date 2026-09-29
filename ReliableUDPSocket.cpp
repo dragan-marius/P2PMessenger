@@ -14,7 +14,7 @@
 // Constructor
 //[PORTABILITY] Cross-Platform Socket API
 //Use conditional compilation directives (#ifdef _WIN32) to abstract away the differences
-//between POSIX sockets (Linux/macOS and Winsock2 (Windows), ensuring the codebase compiles native anywhere
+//between POSIX sockets (Linux/macOS) and Winsock2 (Windows), ensuring the codebase compiles native anywhere
 ReliableUDPSocket::ReliableUDPSocket()
 {
 #ifdef _WIN32
@@ -54,7 +54,7 @@ bool ReliableUDPSocket::connect(const std::string &ip, uint16_t port)
 {
     //[PROTOCOL] Custom 3-Way Handshake
     //To establish a reliable connection over connectionless UDP, implement a TCP-like handshake
-    //This ensures both nodes are reachable and syncrhonizes their initial states before data transmission
+    //This ensures both nodes are reachable and synchronizes their initial states before data transmission
     sockfd = socket(AF_INET, SOCK_DGRAM, 0);
     if (sockfd < 0)
         return false;
@@ -307,7 +307,7 @@ void ReliableUDPSocket::worker_handler()
         {
             // [RELIABILITY] Automatic Repeat reQuest
             //If the socket receive timeout expires (rc < 0) and we have unacknowledged packets in the buffer
-            // assume pakcet loss and trigger an automatic retransmission of the oldes un-ACK'd packet
+            // assume packet loss and trigger an automatic retransmission of the oldest un-ACK'd packet
             if (!send_buffer.empty())
             {
                 if (send_buffer.find(old_seq_num) != send_buffer.end())

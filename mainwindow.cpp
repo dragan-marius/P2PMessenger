@@ -188,7 +188,7 @@ void MainWindow::on_sendButton_clicked(){
 }
 void MainWindow::on_attachButton_clicked()
 {
-    //[CONCURENCY] Detached Background File Transfer
+    //[CONCURRENCY] Detached Background File Transfer
     //Reading and encrypting files chunk-by-chunk is CPU intensive and blocks the event loop
     //We offload the transmission logic to an isolated background std::thread to keep the Qt UI fluid
     QString filePath = QFileDialog::getOpenFileName(this, "Select a file for transfer", "", "All Files(*.*)");
