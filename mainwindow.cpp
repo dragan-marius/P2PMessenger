@@ -21,11 +21,12 @@ MainWindow::MainWindow(QWidget *parent)
     connect(this, &MainWindow::mesajPrimit, this, &MainWindow::afiseazaMesaj, Qt::QueuedConnection);
     connect(ui->messageInput, &QLineEdit::returnPressed, this, &MainWindow::on_sendButton_clicked);
 
-    // 1. INIȚIALIZĂM RADARUL PE PORTUL 8081
+    //Auto-Discovery UDP Radar
+    //We bind a secondary UDP socket on port 8081 specifically for broadcasting 'DISCOVER:' datagrams
+    //This allows nodes to automatically find each other on the local network without hardcoding IPs
     radarSocket = new QUdpSocket(this);
     radarSocket->bind(8081, QUdpSocket::ShareAddress);
 
-    // 2. ASCULTĂM PE RADAR (Suntem mereu cu urechile ciulite)
     connect(radarSocket, &QUdpSocket::readyRead, this, [this]() {
         while (radarSocket->hasPendingDatagrams()) {
             QNetworkDatagram datagram = radarSocket->receiveDatagram();
@@ -34,10 +35,10 @@ MainWindow::MainWindow(QWidget *parent)
             if (data.startsWith("DISCOVER:")) {
                 QString ipExpeditor = datagram.senderAddress().toString();
                 ipExpeditor.remove("::ffff:");
-                // Ignorăm ecoul propriului nostru IP
+                // Ignore our own IP.
                 if (!datagram.senderAddress().isLoopback() && !peersDescoperiti.contains(ipExpeditor)) {
                     peersDescoperiti.insert(ipExpeditor);
-                    emit mesajPrimit("[Auto-Discovery] S-a găsit un Peer la adresa: " + ipExpeditor);
+                    emit mesajPrimit("[Auto-Discovery] A peer was found at the address: " + ipExpeditor);
 
                     if (ipTinta.isEmpty()){
                         ipTinta = ipExpeditor;
@@ -47,17 +48,13 @@ MainWindow::MainWindow(QWidget *parent)
         }
     });
 
-    // 3. PORNIM PULSUL RADARULUI
     QTimer* discoveryTimer = new QTimer(this);
     connect(discoveryTimer, &QTimer::timeout, this, [this](){
         QByteArray mesaj = "DISCOVER:MARIUS";
-        // Trimitem strigătul către toată rețeaua pe 8081
+        // We are sending the broadcast to the entire network on port 8081.
         radarSocket->writeDatagram(mesaj, QHostAddress::Broadcast, 8081);
     });
-    //discoveryTimer->start(2000);
     discoveryTimer->start(500);
-
-    // 4. PORNIM MOTORUL C++
     std::thread fir_retea(&MainWindow::pornesteRetea, this);
     fir_retea.detach();
 }
@@ -69,34 +66,37 @@ MainWindow::~MainWindow()
 
 void MainWindow::pornesteRetea() {
 
-    // NOD UNIFICAT: Încercăm automat să fim Gazda
+    // Symmetric Node Unification
+    //The application avoids strict Server/Client roles. It attempts to bind on 8080 as a Host
+    //If the port is already in use, it cleanly falls back
+    //to Client mode and waits for radar signals to connect
     if (socket_chat.listen(8080)) {
-        emit mesajPrimit("[Sistem] Suntem Gazdă. Așteptăm conexiuni...");
+        emit mesajPrimit("[System] We are the host. Awaiting connections....");
     }
     else {
-        emit mesajPrimit("[Sistem] Suntem Client. Așteptăm un semnal de la Radar...");
+        emit mesajPrimit("[System] We are the Client. We are awaiting a signal from the Radar...");
 
-        // Oprim motorul C++ din execuție până când radarul găsește un IP
         int incercari = 0;
         while (ipTinta.isEmpty() && incercari < 3) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(500)); // Verificăm de 2 ori pe secundă
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
             incercari++;
         }
 
         if (ipTinta.isEmpty()){
-            emit mesajPrimit("[Sistem] Test local detectat de Windows. Folosim 127.0.0.1 ...");
+            emit mesajPrimit("[System] Local test detected by Windows. Using 127.0.0.1. ...");
             ipTinta = "127.0.0.1";
         }
         else
-            emit mesajPrimit("[Sistem] Inițiem Handshake-ul cu IP: " + ipTinta + " ...");
+            emit mesajPrimit("[System] Initiating handshake with IP: " + ipTinta + " ...");
 
-        // Ne conectăm la IP-ul real găsit de radar, nu la 127.0.0.1!
         socket_chat.connect(ipTinta.toStdString(), 8080);
 
-        emit mesajPrimit("[Sistem] Conexiune stabilită cu succes!");
+        emit mesajPrimit("[System] Connection successfully established!");
     }
 
-    emit mesajPrimit("[Securitate] Generăm cheile Diffie-Hellman...");
+    //[SECURITY] Diffie-Hellman Key Exchange
+    //We negotiate a shared symmetric key over the unecrypted channel using prime P and base G
+    emit mesajPrimit("[Security] Generating Diffie-Hellman keys...");
 
     long long P = 2147483647;
     long long G = 16807;
@@ -125,11 +125,10 @@ void MainWindow::pornesteRetea() {
     }
 
     cheieSecreta = calculModulo(publicKeyPrimit, secretPersonal, P);
-    emit mesajPrimit("[Securitate] Cheie E2EE stabilită cu succes: " + QString::number(cheieSecreta));
+    emit mesajPrimit("[Security] E2EE key successfully established: " + QString::number(cheieSecreta));
 
     QFile fisierPrimit;
 
-    // Bucla infinită de ascultare a motorului de chat/fișiere
     while (true) {
         int bytes = socket_chat.recv_data(buffer, sizeof(buffer));
 
@@ -143,10 +142,9 @@ void MainWindow::pornesteRetea() {
             }
             else if (pachet.startsWith("FILE:")) {
                 QString numeFisier = QString::fromUtf8(pachet.mid(5));
-                emit mesajPrimit("[Sistem] Primim fișierul: " + numeFisier);
+                emit mesajPrimit("[System] Receiving the file: " + numeFisier);
 
-                // Creăm fișierul local
-                fisierPrimit.setFileName("primit_" + numeFisier);
+                fisierPrimit.setFileName("receive_" + numeFisier);
                 fisierPrimit.open(QIODevice::WriteOnly);
             }
             else if (pachet.startsWith("BIN:")) {
@@ -160,11 +158,11 @@ void MainWindow::pornesteRetea() {
             else if (pachet == "END_FILE") {
                 if (fisierPrimit.isOpen()) {
                     fisierPrimit.close();
-                    emit mesajPrimit("[Sistem] Fișier salvat cu succes pe disk!");
+                    emit mesajPrimit("[System] File successfully saved to disk!");
                 }
             }
             else {
-                emit mesajPrimit(QString::fromUtf8(pachet)); // Fallback pentru mesaje simple
+                emit mesajPrimit(QString::fromUtf8(pachet));
             }
         }
     }
@@ -179,11 +177,8 @@ void MainWindow::on_sendButton_clicked(){
     QString text = ui->messageInput->text();
     if (text.isEmpty()) return;
 
-    ui->chatHistory->addItem("Tu: " + text);
+    ui->chatHistory->addItem("You: " + text);
     ui->chatHistory->scrollToBottom();
-
-    // std::string text_std = "TXT:"+text.toStdString();
-    // socket_chat.send_data(text_std.c_str(),text_std.length());
 
     QByteArray textCriptat = aplicaXor(text.toUtf8());
     QByteArray pachetFinal = "TXT:";
@@ -193,34 +188,34 @@ void MainWindow::on_sendButton_clicked(){
 }
 void MainWindow::on_attachButton_clicked()
 {
-    QString filePath = QFileDialog::getOpenFileName(this, "Alege un fisier pentru transfer", "", "Toate Fisierele (*.*)");
+    //[CONCURENCY] Detached Background File Transfer
+    //Reading and encrypting files chunk-by-chunk is CPU intensive and blocks the event loop
+    //We offload the transmission logic to an isolated background std::thread to keep the Qt UI fluid
+    QString filePath = QFileDialog::getOpenFileName(this, "Select a file for transfer", "", "All Files(*.*)");
     if (filePath.isEmpty()) return;
 
     QFileInfo fileInfo(filePath);
     QString fileName = fileInfo.fileName();
-    ui->chatHistory->addItem("[Sistem] Pregatit pentru transfer: " + fileName);
+    ui->chatHistory->addItem("[System] Ready for transfer: " + fileName);
     ui->chatHistory->scrollToBottom();
 
-    // Blocăm butonul ca să nu dăm click de două ori
     ui->attachButton->setEnabled(false);
 
-    // Transformăm datele în C++ standard ca să le putem trimite în siguranță către noul thread
     std::string fileNameStd = fileName.toStdString();
     std::string filePathStd = filePath.toStdString();
 
-    // PORNIM TRANSFERUL ÎN FUNDAL (MULTITHREADING)
     std::thread([this, filePathStd, fileNameStd]() {
 
-        // 1. Trimitem antetul
+        // 1. Send the header.
         std::string header = "FILE:" + fileNameStd;
         socket_chat.send_data(header.c_str(), header.length());
 
-        // 2. Citim și trimitem fișierul
+        // 2. Read and send the file.
         QFile fisier(QString::fromStdString(filePathStd));
         if (fisier.open(QIODevice::ReadOnly)) {
             while(!fisier.atEnd()){
                 QByteArray chunk = fisier.read(256);
-                if(chunk.isEmpty()) break; // Siguranță împotriva blocajelor
+                if(chunk.isEmpty()) break;
 
                 QByteArray chunkCriptat = aplicaXor(chunk);
                 QByteArray pachet;
@@ -228,25 +223,27 @@ void MainWindow::on_attachButton_clicked()
                 pachet.append(chunkCriptat);
                 socket_chat.send_data(pachet.constData(), pachet.size());
 
-                // Acum că suntem în fundal, putem folosi o pauză rapidă de 2ms
                 std::this_thread::sleep_for(std::chrono::milliseconds(2));
             }
             fisier.close();
 
-            // 3. Semnalul de final
+            // 3. Final signal
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
             std::string finalMsg = "END_FILE";
             socket_chat.send_data(finalMsg.c_str(), finalMsg.length());
         }
 
-        // 4. ACTUALIZĂM INTERFAȚA GRAFICĂ (Revenim pe firul principal în siguranță)
+        // 4. UPDATING THE GRAPHICAL INTERFACE
+        //[THREAD SAFETY] Cross-Thread UI Updates
+        //Qt Widgets are not thread-safe. We must use QMetaObject::invokeMethod to safely queue
+        //the UI update back onto the main event loop
         QMetaObject::invokeMethod(this, [this]() {
-            ui->chatHistory->addItem("[Sistem] Fișier trimis complet prin rețea!");
+            ui->chatHistory->addItem("[System] File transfer via network complete!");
             ui->chatHistory->scrollToBottom();
             ui->attachButton->setEnabled(true);
         });
 
-    }).detach(); // Deconectăm firul pentru a rula independent
+    }).detach();
 }
 
 long long MainWindow::calculModulo(long long baza, long long exponent, long long mod){

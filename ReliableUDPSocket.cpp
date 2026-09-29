@@ -12,7 +12,9 @@
 #include <iostream>
 
 // Constructor
-
+//[PORTABILITY] Cross-Platform Socket API
+//Use conditional compilation directives (#ifdef _WIN32) to abstract away the differences
+//between POSIX sockets (Linux/macOS and Winsock2 (Windows), ensuring the codebase compiles native anywhere
 ReliableUDPSocket::ReliableUDPSocket()
 {
 #ifdef _WIN32
@@ -48,20 +50,20 @@ ReliableUDPSocket::~ReliableUDPSocket()
 #endif
 }
 
-// Clientul initiaza conexiune
 bool ReliableUDPSocket::connect(const std::string &ip, uint16_t port)
 {
+    //[PROTOCOL] Custom 3-Way Handshake
+    //To establish a reliable connection over connectionless UDP, implement a TCP-like handshake
+    //This ensures both nodes are reachable and syncrhonizes their initial states before data transmission
     sockfd = socket(AF_INET, SOCK_DGRAM, 0);
     if (sockfd < 0)
         return false;
 
-    // timeout pentru receptie
     struct timeval tv;
     tv.tv_sec = 0;
     tv.tv_usec = 500000;
     setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
 
-    // adresa serverului
     memset(&peer_addr, 0, sizeof(peer_addr));
     peer_addr.sin_family = AF_INET;
     peer_addr.sin_port = htons(port);
@@ -76,7 +78,7 @@ bool ReliableUDPSocket::connect(const std::string &ip, uint16_t port)
     char buf[MAX_SEGMENT_SIZE];
     bool connected = false;
 
-    std::cout << "[Client] Trimit SYN spre " << ip << ":" << port << "...\n";
+    std::cout << "[Client] Sending SYN to " << ip << ":" << port << "...\n";
 
     while (!connected)
     {
@@ -101,7 +103,7 @@ bool ReliableUDPSocket::connect(const std::string &ip, uint16_t port)
     // SEND ACK
     syn_hdr.type = ACK;
     sendto(sockfd, (const char*)&syn_hdr, sizeof(syn_hdr), 0, (struct sockaddr *)&peer_addr, sizeof(peer_addr));
-    std::cout << "[Client] Conexiune stabilita!\n";
+    std::cout << "[Client] Connection established!\n";
     is_running = true;
     background_thread = std::thread(&ReliableUDPSocket::worker_handler, this);
     return true;
@@ -124,7 +126,7 @@ bool ReliableUDPSocket::listen(uint16_t port)
     socklen_t len = sizeof(peer_addr);
     std::cout << "[Server] Aștept SYN pe portul " << port << "...\n";
 
-    // asteptare pachet SYN
+    // Wait SYN packet
     while (true)
     {
         recvfrom(listen_fd, buf, sizeof(buf), 0, (struct sockaddr *)&peer_addr, &len);
@@ -133,14 +135,13 @@ bool ReliableUDPSocket::listen(uint16_t port)
             break;
     }
 
-    std::cout << "[Server] Primit SYN, creez socket dedicat...\n";
+    std::cout << "[Server] SYN received, creating dedicated socket...\n";
 
-    // creare socket pentru conexiune specifica
     sockfd = socket(AF_INET, SOCK_DGRAM, 0);
     struct sockaddr_in new_serv_addr{};
     new_serv_addr.sin_family = AF_INET;
     new_serv_addr.sin_addr.s_addr = INADDR_ANY;
-    new_serv_addr.sin_port = 0; // alegere automat port liber
+    new_serv_addr.sin_port = 0;
     bind(sockfd, (struct sockaddr *)&new_serv_addr, sizeof(new_serv_addr));
 
     socklen_t new_len = sizeof(new_serv_addr);
@@ -178,7 +179,7 @@ bool ReliableUDPSocket::listen(uint16_t port)
     // clean listen socket
     close(listen_fd);
 
-    std::cout << "[Server] Conexiune stabilită cu succes pe noul port!\n";
+    std::cout << "[Server] Connection successfully established on the new port!\n";
     is_running = true;
     background_thread = std::thread(&ReliableUDPSocket::worker_handler, this);
     return true;
@@ -186,6 +187,10 @@ bool ReliableUDPSocket::listen(uint16_t port)
 
 int ReliableUDPSocket::send_data(const char *buffer, int len)
 {
+    //[FLOW CONTROL] Thread-Safe Sliding Window
+    //Use std::mutex and std::condition_variable to safely block the sending thread
+    //if the unacknowledged packet window is full
+    //This prevents network congestion and buffer overflows
     std::unique_lock<std::mutex> lock(con_lock);
 
     // if windows is full, thread sleep
@@ -300,7 +305,9 @@ void ReliableUDPSocket::worker_handler()
         }
         else
         {
-            // rc <0, timeout expired
+            // [RELIABILITY] Automatic Repeat reQuest
+            //If the socket receive timeout expires (rc < 0) and we have unacknowledged packets in the buffer
+            // assume pakcet loss and trigger an automatic retransmission of the oldes un-ACK'd packet
             if (!send_buffer.empty())
             {
                 if (send_buffer.find(old_seq_num) != send_buffer.end())
@@ -312,20 +319,3 @@ void ReliableUDPSocket::worker_handler()
         }
     }
 }
-
-// void ReliableUDPSocket::enable_broadcast(){
-//     int broadcastPermission = 1;
-
-//     if (setsockopt(sockfd, SOL_SOCKET, SO_BROADCAST, (char*)&broadcastPermission,sizeof(broadcastPermission))<0) {
-
-//     }
-// }
-
-// void ReliableUDPSocket::send_broadcast(const char* data, int length, int port){
-//     struct sockaddr_in broadcastAddr;
-//     broadcastAddr.sin_family =  AF_INET;
-//     broadcastAddr.sin_port =  htons(port);
-//     broadcastAddr.sin_addr.s_addr = inet_addr("255.255.255.255");
-
-//     sendto(sockfd, data, length, 0, (struct sockaddr*)&broadcastAddr, sizeof(broadcastAddr));
-// }
