@@ -78,6 +78,8 @@ class ReliableUDPSocket {
 
         std::thread background_thread;
         bool is_running;
+        int out_of_order_acks = 0;
+        //if is different from 0,a packet is lost
 
         void worker_handler();
     public:
