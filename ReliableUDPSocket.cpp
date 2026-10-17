@@ -196,7 +196,7 @@ int ReliableUDPSocket::send_data(const char *buffer, int len)
     // if windows is full, thread sleep
 
     fereastra_libera.wait(lock, [this]()
-                          { return (next_seq_num - old_seq_num) < max_window_seq; });
+                          { return (uint16_t)(next_seq_num - old_seq_num) < max_window_seq; });
 
     // packet(header+data)
 
@@ -269,7 +269,7 @@ void ReliableUDPSocket::worker_handler()
                     if (old_seq_num == acked_seq)
                     {
                         old_seq_num++;
-                        while (send_buffer.find(old_seq_num) == send_buffer.end() && old_seq_num < next_seq_num)
+                        while (send_buffer.find(old_seq_num) == send_buffer.end() && (uint16_t)(old_seq_num - next_seq_num) < 0)
                         {
                             old_seq_num++;
                         }
@@ -289,7 +289,7 @@ void ReliableUDPSocket::worker_handler()
                 sendto(sockfd, (const char*)&ack_hdr, sizeof(ack_hdr), 0, (struct sockaddr *)&peer_addr, sizeof(peer_addr));
 
                 // save data
-                if (seq >= expected_seq_num && recv_buffer.find(seq) == recv_buffer.end())
+                if ((uint16_t)(seq - expected_seq_num) >= 0 && recv_buffer.find(seq) == recv_buffer.end())
                 {
                     struct packet pkt;
                     pkt.len = rc;
