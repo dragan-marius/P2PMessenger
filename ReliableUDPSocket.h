@@ -1,5 +1,7 @@
 #pragma once
 
+#include <chrono>
+#include <cmath>
 #include <cstdint>
 #ifdef _WIN32
 #include <winsock2.h>
@@ -15,7 +17,6 @@
 #include <cstdio>
 #include <string>
 #include <thread>
-#include <mutex>
 #include <condition_variable>
 #include <mutex>
 
@@ -58,14 +59,20 @@ struct packet{
 
 class ReliableUDPSocket {
     private:
-        //struct connection
-        int sockfd;
-        struct sockaddr_in peer_addr;
-
+        bool is_running;
         uint16_t next_seq_num;
         uint16_t old_seq_num;
         uint16_t expected_seq_num;
+        double estimated_rtt = 100.0; //100ms
+        double dev_rtt = 50.0; //initial variation
+        long timeout_interval = 500; //RTO initial 500ms
+        //struct connection
+        int sockfd;
+        int out_of_order_acks = 0;
+        //if is different from 0,a packet is lost
         int max_window_seq;
+
+        struct sockaddr_in peer_addr;    
 
         std::mutex con_lock;
         std::condition_variable fereastra_libera;
@@ -76,11 +83,12 @@ class ReliableUDPSocket {
         std::map<uint16_t,struct packet> send_buffer;
         std::map<uint16_t,struct packet> recv_buffer;
 
-        std::thread background_thread;
-        bool is_running;
-        int out_of_order_acks = 0;
-        //if is different from 0,a packet is lost
+        //dictionary
+        std::map<uint16_t, std::chrono::steady_clock::time_point> send_times;
 
+        std::thread background_thread;
+
+        void updateTimeoutSocket();
         void worker_handler();
     public:
     ReliableUDPSocket();

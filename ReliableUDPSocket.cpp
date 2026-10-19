@@ -58,11 +58,7 @@ bool ReliableUDPSocket::connect(const std::string &ip, uint16_t port)
     sockfd = socket(AF_INET, SOCK_DGRAM, 0);
     if (sockfd < 0)
         return false;
-
-    struct timeval tv;
-    tv.tv_sec = 0;
-    tv.tv_usec = 500000;
-    setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
+    updateTimeoutSocket();
 
     memset(&peer_addr, 0, sizeof(peer_addr));
     peer_addr.sin_family = AF_INET;
@@ -146,11 +142,9 @@ bool ReliableUDPSocket::listen(uint16_t port)
 
     socklen_t new_len = sizeof(new_serv_addr);
     getsockname(sockfd, (struct sockaddr *)&new_serv_addr, &new_len);
+    updateTimeoutSocket();
 
-    struct timeval tv;
-    tv.tv_sec = 0;
-    tv.tv_usec = 500000;
-    setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
+    //setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
 
     // send SYN-ACK with new port
 
@@ -215,6 +209,8 @@ int ReliableUDPSocket::send_data(const char *buffer, int len)
     memcpy(pkt.data, send_buf, pkt.len);
     send_buffer[next_seq_num] = pkt;
 
+    send_times[next_seq_num] = std::chrono::steady_clock::now();
+
     // send
     sendto(sockfd, send_buf, pkt.len, 0, (struct sockaddr *)&peer_addr, sizeof(peer_addr));
     next_seq_num++;
@@ -262,6 +258,20 @@ void ReliableUDPSocket::worker_handler()
             {
                 // clear the window
                 uint16_t acked_seq = hdr->ack_num;
+                if (send_times.find(acked_seq) !=  send_times.end()){
+                    //current time
+                    auto now = std::chrono::steady_clock::now();
+                    //raw time in milliseconds
+                    long sample_rtt =  std::chrono::duration_cast<std::chrono::milliseconds>(now - send_times[acked_seq]).count();
+                    //TCP mathematics (Jacobson/Karels)
+                    estimated_rtt = 0.875 * estimated_rtt + 0.125 * sample_rtt;
+                    dev_rtt = 0.75 * dev_rtt + 0.25 * std::abs(sample_rtt - estimated_rtt);
+                    timeout_interval = estimated_rtt + 4 * dev_rtt;
+                    //apply the new timeout and free the memory
+                    updateTimeoutSocket();
+                    send_times.erase(acked_seq);
+
+                }
                 if (send_buffer.find(acked_seq) != send_buffer.end())
                 {
                     send_buffer.erase(acked_seq);
@@ -269,9 +279,26 @@ void ReliableUDPSocket::worker_handler()
                     if (old_seq_num == acked_seq)
                     {
                         old_seq_num++;
+                        out_of_order_acks = 0;
+                        //reset contor
                         while (send_buffer.find(old_seq_num) == send_buffer.end() && (uint16_t)(next_seq_num - old_seq_num) > 0)
                         {
                             old_seq_num++;
+                        }
+                    }
+                    else if ((int16_t)(acked_seq - old_seq_num) > 0)
+                    {
+                        out_of_order_acks++;
+                        if (out_of_order_acks >= 3){
+                            if (send_buffer.find(old_seq_num) != send_buffer.end())
+                            {
+                                struct packet &pkt = send_buffer[old_seq_num];
+                                sendto(sockfd, pkt.data, pkt.len, 0, (struct sockaddr*)&peer_addr, sizeof(peer_addr));
+                                send_times.erase(old_seq_num);
+                                std::cout<<"[Fast Retransmit] Packet "<< old_seq_num << "it was quickly retransmited\n";
+                            }
+                            out_of_order_acks = 0;
+                            //reset contor to prevent unauthorized retransmissions,
                         }
                     }
                     fereastra_libera.notify_all();
@@ -314,8 +341,23 @@ void ReliableUDPSocket::worker_handler()
                 {
                     struct packet &pkt = send_buffer[old_seq_num];
                     sendto(sockfd, pkt.data, pkt.len, 0, (struct sockaddr *)&peer_addr, sizeof(peer_addr));
+                    send_times.erase(old_seq_num);
+                    timeout_interval *= 2;
+                    updateTimeoutSocket();
                 }
             }
         }
     }
+}
+
+void ReliableUDPSocket::updateTimeoutSocket()
+{
+    if (timeout_interval < 10) timeout_interval = 10;
+    //minim 10ms
+    if (timeout_interval > 2000) timeout_interval = 2000;
+    //2000ms maxim
+    struct timeval tv;
+    tv.tv_sec = timeout_interval / 1000;
+    tv.tv_usec = (timeout_interval % 1000) * 1000;
+    setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
 }

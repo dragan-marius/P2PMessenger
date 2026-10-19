@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.19)
 project(P2PMessenger LANGUAGES CXX)
-
+set(OPENSSL_ROOT_DIR "C:/msys64/ucrt64")
+set(OPENSSL_INCLUDE_DIR "C:/msys64/ucrt64/include")
+set(OPENSSL_CRYPTO_LIBRARY "C:/msys64/ucrt64/lib/libcrypto.dll.a")
+set(OPENSSL_SSL_LIBRARY "C:/msys64/ucrt64/lib/libssl.dll.a")
+find_package(OpenSSL REQUIRED)
 find_package(Qt6 6.5 REQUIRED COMPONENTS Core Widgets Network)
 
 qt_standard_project_setup()
@@ -18,8 +22,11 @@ qt_add_executable(P2PMessenger
 target_link_libraries(P2PMessenger
     PRIVATE
         Qt::Core
-        Qt::Widgets ws2_32
+        Qt::Widgets
+        ws2_32
         Qt6::Network
+	OpenSSL::Crypto
+	OpenSSL::SSL
 )
 
 install(TARGETS P2PMessenger
