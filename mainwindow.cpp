@@ -11,6 +11,11 @@
 #include <QNetworkDatagram>
 #include <QUdpSocket>
 #include <time.h>
+#include <openssl/evp.h>
+#include <openssl/rand.h>
+#include <openssl/sha.h>
+#include <vector>
+#include <stdexcept>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -62,6 +67,79 @@ MainWindow::MainWindow(QWidget *parent)
 MainWindow::~MainWindow()
 {
     delete ui;
+}
+
+std::vector<uint8_t> MainWindow::MainWindow::deriveAESKey(long long dh_secret){
+    std::vector<uint8_t> key(SHA256_DIGEST_LENGTH);
+    SHA256(reinterpret_cast<const unsigned char*>(&dh_secret), sizeof(dh_secret), key.data());
+    return key;
+}
+
+std::vector<uint8_t> MainWindow::encryptAES_GCM(const std::vector<uint8_t> &plaintext, const std::vector<uint8_t> &key){
+    //Generate a random 12-byte IV (so that identical messages appear different on the wire)
+    std::vector<uint8_t> iv(12);
+    RAND_bytes(iv.data(), 12);
+
+    //Providing OpenSSL for AES2-256-GCM
+    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+    EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL);
+    EVP_EncryptInit_ex(ctx, NULL, NULL, key.data(), iv.data());
+
+    //Encrypt the text
+    std::vector<uint8_t> ciphertext(plaintext.size());
+    int len;
+    EVP_EncryptUpdate(ctx, ciphertext.data(), &len, plaintext.data(), plaintext.size());
+    int cipher_text_len = len;
+
+    EVP_EncryptFinal_ex(ctx, ciphertext.data() +  len, &len);
+
+    //Extract the 16-byte security seal (tag).
+    std::vector<uint8_t> tag(16);
+    EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, 16, tag.data());
+    EVP_CIPHER_CTX_free(ctx);
+
+    //Bundle everything into a single package.
+    std::vector<uint8_t> secure_packet;
+    secure_packet.insert(secure_packet.end(), iv.begin(), iv.end());
+    secure_packet.insert(secure_packet.end(), ciphertext.begin(), ciphertext.end());
+    secure_packet.insert(secure_packet.end(), tag.begin(), tag.end());
+    return secure_packet;
+}
+std::vector<uint8_t> MainWindow::decryptAES_GCM(const std::vector<uint8_t>& packet, const std::vector<uint8_t>& key){
+    if (packet.size() < 28){
+        //valid packet
+        //12 bytes(IV) + 16 bytes (tag)
+        throw std::runtime_error("Invalid or corrupted packet.");
+    }
+    std::vector<uint8_t> iv(packet.begin(), packet.begin() + 12);
+    std::vector<uint8_t> ciphertext(packet.begin() + 12, packet.end() - 16);
+    std::vector<uint8_t> tag(packet.end() - 16, packet.end());
+
+    //Providing OpenSSL for decrypt
+    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+    EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL);
+    EVP_DecryptInit_ex(ctx, NULL, NULL, key.data(), iv.data());
+
+    //Decrypt the text
+    std::vector<uint8_t> plaintext(ciphertext.size());
+    int len;
+    EVP_DecryptUpdate(ctx, plaintext.data(), &len, ciphertext.data(), ciphertext.size());
+    int plaintext_len = len;
+
+    //Verify tag
+    EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, 16, tag.data());
+
+    int ret = EVP_DecryptFinal_ex(ctx, plaintext.data() + len, &len);
+    EVP_CIPHER_CTX_free(ctx);
+
+    if (ret > 0){
+        plaintext_len+= len;
+        plaintext.resize(plaintext_len);
+        return plaintext;
+    } else {
+        throw std::runtime_error("E2EE security error: Tampered packet or incorrect key!");
+    }
+
 }
 
 void MainWindow::pornesteRetea() {
@@ -124,8 +202,8 @@ void MainWindow::pornesteRetea() {
         }
     }
 
-    cheieSecreta = calculModulo(publicKeyPrimit, secretPersonal, P);
-    emit mesajPrimit("[Security] E2EE key successfully established: " + QString::number(cheieSecreta));
+    dh_secret = calculModulo(publicKeyPrimit, secretPersonal, P);
+    emit mesajPrimit("[Security] E2EE key successfully established: " + QString::number(dh_secret));
 
     QFile fisierPrimit;
 
@@ -136,9 +214,16 @@ void MainWindow::pornesteRetea() {
             QByteArray pachet(buffer, bytes);
 
             if (pachet.startsWith("TXT:")) {
-                QByteArray textCriptat = pachet.mid(4);
-                QByteArray textDecriptat = aplicaXor(textCriptat);
-                emit mesajPrimit(QString::fromUtf8(textDecriptat));
+                QByteArray rawPacket = pachet.mid(4);
+                std::vector<uint8_t> securePacket(rawPacket.begin(), rawPacket.end());
+                std::vector<uint8_t> aesKey = deriveAESKey(dh_secret);
+                try {
+                    std::vector<uint8_t> decryptedData = decryptAES_GCM(securePacket, aesKey);
+                    QString decryptedText = QString::fromUtf8(reinterpret_cast<const char*>(decryptedData.data()), decryptedData.size());
+                    emit mesajPrimit("Peer: " + decryptedText);
+                } catch (const std::exception& e) {
+                    emit mesajPrimit(QString("[Security] Packet rejected: %1").arg(e.what()));
+                }
             }
             else if (pachet.startsWith("FILE:")) {
                 QString numeFisier = QString::fromUtf8(pachet.mid(5));
@@ -149,16 +234,29 @@ void MainWindow::pornesteRetea() {
             }
             else if (pachet.startsWith("BIN:")) {
                 if (fisierPrimit.isOpen()) {
-                    QByteArray dateCriptate = pachet.mid(4);
-                    QByteArray dateDecriptate = aplicaXor(dateCriptate);
-                    fisierPrimit.write(dateDecriptate);
-                    fisierPrimit.flush();
+                    //Accumulate encrypted data chunks into the buffer
+                    QByteArray incomingEncryptedData = pachet.mid(4);
+                    encryptedFileBuffer.append(incomingEncryptedData);
                 }
             }
             else if (pachet == "END_FILE") {
                 if (fisierPrimit.isOpen()) {
-                    fisierPrimit.close();
-                    emit mesajPrimit("[System] File successfully saved to disk!");
+                    std::vector<uint8_t> encryptedDataVec(encryptedFileBuffer.begin(), encryptedFileBuffer.end());
+                    std::vector<uint8_t> aesKey = deriveAESKey(dh_secret);
+                    try{
+                        std::vector<uint8_t> decryptedDataVec = decryptAES_GCM(encryptedDataVec, aesKey);
+                        QByteArray decryptedData(reinterpret_cast<const char*>(decryptedDataVec.data()), decryptedDataVec.size());
+
+                        fisierPrimit.write(decryptedData);
+                        fisierPrimit.close();
+                        emit mesajPrimit("[System] File successfully saved to disk!");
+                    } catch (const std::exception& e){
+                        fisierPrimit.close();
+                        emit mesajPrimit(QString("[Error] File decryption failed: %1!").arg(e.what()));
+                    }
+                    encryptedFileBuffer.clear();
+
+
                 }
             }
             else {
@@ -180,12 +278,17 @@ void MainWindow::on_sendButton_clicked(){
     ui->chatHistory->addItem("You: " + text);
     ui->chatHistory->scrollToBottom();
 
-    QByteArray textCriptat = aplicaXor(text.toUtf8());
+    QByteArray utfText = text.toUtf8();
+    std::vector<uint8_t> plaintext(utfText.begin(), utfText.end());
+    std::vector<uint8_t> aesKey = deriveAESKey(dh_secret);
+    std::vector<uint8_t> encryptedData = encryptAES_GCM(plaintext, aesKey);
+    QByteArray textCriptat(reinterpret_cast<const char*> (encryptedData.data()), encryptedData.size());
     QByteArray pachetFinal = "TXT:";
     pachetFinal.append(textCriptat);
     socket_chat.send_data(pachetFinal.constData(),pachetFinal.size());
     ui->messageInput->clear();
 }
+
 void MainWindow::on_attachButton_clicked()
 {
     //[CONCURRENCY] Detached Background File Transfer
@@ -211,22 +314,30 @@ void MainWindow::on_attachButton_clicked()
         socket_chat.send_data(header.c_str(), header.length());
 
         // 2. Read and send the file.
-        QFile fisier(QString::fromStdString(filePathStd));
-        if (fisier.open(QIODevice::ReadOnly)) {
-            while(!fisier.atEnd()){
-                QByteArray chunk = fisier.read(256);
-                if(chunk.isEmpty()) break;
+        QFile file(QString::fromStdString(filePathStd));
+        if (file.open(QIODevice::ReadOnly)) {
+            QByteArray fileContent = file.readAll();
+            file.close();
 
-                QByteArray chunkCriptat = aplicaXor(chunk);
-                QByteArray pachet;
-                pachet.append("BIN:");
-                pachet.append(chunkCriptat);
-                socket_chat.send_data(pachet.constData(), pachet.size());
+            std::vector<uint8_t> unencryptedData(fileContent.begin(), fileContent.end());
+            std::vector<uint8_t> aesKey = deriveAESKey(dh_secret);
+            std::vector<uint8_t> encryptedData = encryptAES_GCM(unencryptedData, aesKey);
 
-                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            int currentOffset =  0;
+            int chunkSize = 1024;
+
+            while (currentOffset < encryptedData.size()){
+                int bytesToSend = std::min(chunkSize, static_cast<int>(encryptedData.size() - currentOffset));
+                QByteArray encryptedChunk(reinterpret_cast<const char*>(encryptedData.data() + currentOffset), bytesToSend);
+
+                QByteArray packet;
+                packet.append("BIN:");
+                packet.append(encryptedChunk);
+                socket_chat.send_data(packet.constData(), packet.size());
+
+                currentOffset += bytesToSend;
+                //std::this_thread::sleep_for(std::chrono::milliseconds(2));
             }
-            fisier.close();
-
             // 3. Final signal
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
             std::string finalMsg = "END_FILE";
@@ -259,12 +370,3 @@ long long MainWindow::calculModulo(long long baza, long long exponent, long long
     return rezultat;
 }
 
-QByteArray MainWindow::aplicaXor(QByteArray date){
-    QByteArray rezultat = date;
-    char* cheie = (char*)&cheieSecreta;
-
-    for(int i = 0; i < rezultat.size(); i++){
-        rezultat[i] = rezultat[i] ^ cheie[i%sizeof(long long)];
-    }
-    return rezultat;
-}

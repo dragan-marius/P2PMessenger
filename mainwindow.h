@@ -5,6 +5,8 @@
 #include <QUdpSocket>
 #include "ReliableUDPSocket.h"
 #include <QSet>
+#include <vector>
+#include <cstdint>
 QT_BEGIN_NAMESPACE
 namespace Ui {
 class MainWindow;
@@ -31,12 +33,15 @@ private:
     QUdpSocket *radarSocket;
     QSet<QString> peersDescoperiti;
     QString ipTinta = "";
+    QByteArray encryptedFileBuffer;
 
 
-    long long cheieSecreta = 0;
+    long long dh_secret = 0;
     long long calculModulo(long long baza, long long exponent, long long mod);
 
     void pornesteRetea();
-    QByteArray aplicaXor(QByteArray date);
+    std::vector<uint8_t> deriveAESKey(long long dh_secret);
+    std::vector<uint8_t> encryptAES_GCM(const std::vector<uint8_t> &plaintext, const std::vector<uint8_t> &key);
+    std::vector<uint8_t> decryptAES_GCM(const std::vector<uint8_t>& packet, const std::vector<uint8_t>& key);
 };
 #endif // MAINWINDOW_H
